@@ -25,13 +25,13 @@ export interface AccountError {
   error: string;
 }
 
-function slug(s: string): string {
+/** URL-ish id from a calendar name, keeping letters of any script ("Важное" → "важное"). */
+export function slug(s: string): string {
   return (
     s
-      .normalize('NFKD')
-      .replace(/[̀-ͯ]/g, '')
+      .normalize('NFC')
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/[^\p{L}\p{N}]+/gu, '-')
       .replace(/^-|-$/g, '') || 'calendar'
   );
 }
