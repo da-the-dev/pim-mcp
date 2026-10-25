@@ -1,0 +1,35 @@
+{
+  "name": "calendar-mcp",
+  "version": "0.1.0",
+  "description": "Thin local MCP server for CalDAV calendars (Nextcloud, iCloud, Google)",
+  "type": "module",
+  "bin": {
+    "calendar-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "check": "node dist/index.js check",
+    "prepare": "tsc"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ical.js": "^2.2.1",
+    "smol-toml": "^1.9.1",
+    "tsdav": "^2.5.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}
