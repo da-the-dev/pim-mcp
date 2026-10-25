@@ -77,6 +77,7 @@ export function storeName(): string {
 interface RunOptions {
   input?: string;
   env?: NodeJS.ProcessEnv;
+  replaceEnv?: boolean; // use env as-is instead of merging into process.env
   shell?: boolean;
   timeout?: number;
 }
@@ -87,7 +88,7 @@ interface RunOptions {
  */
 function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { env: { ...process.env, ...opts.env }, shell: opts.shell, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(cmd, args, { env: opts.replaceEnv ? opts.env : { ...process.env, ...opts.env }, shell: opts.shell, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let out = '';
     let err = '';
     const timeout = opts.timeout ?? STORE_TIMEOUT_MS;
@@ -106,6 +107,7 @@ function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<string
       if (code === 0) resolve(out);
       else reject(new Error(err.trim() || `${opts.shell ? 'command' : cmd} exited with code ${code}`));
     });
+    child.stdin.on('error', () => {}); // a child that exits without reading stdin causes EPIPE
     child.stdin.end(opts.input ?? '');
   });
 }
@@ -119,18 +121,32 @@ function dpapiPath(service: string, account: string): string {
 }
 
 const PS = ['-NoProfile', '-NonInteractive', '-Command'];
+// Uses .NET's ProtectedData directly rather than ConvertTo-SecureString: that cmdlet's module
+// fails to autoload in Windows PowerShell when PowerShell 7's PSModulePath is inherited.
+const PS_DPAPI = 'Add-Type -AssemblyName System.Security; $utf8 = New-Object Text.UTF8Encoding $false; ';
+const PS_READ =
+  PS_DPAPI +
+  '$e = [Convert]::FromBase64String([IO.File]::ReadAllText($env:PIM_MCP_SECRET_PATH)); ' +
+  '$b = [Security.Cryptography.ProtectedData]::Unprotect($e, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser); ' +
+  '[Console]::OutputEncoding = $utf8; [Console]::Out.Write($utf8.GetString($b))';
+const PS_WRITE =
+  PS_DPAPI +
+  '[Console]::InputEncoding = $utf8; $b = $utf8.GetBytes([Console]::In.ReadToEnd()); ' +
+  '$e = [Security.Cryptography.ProtectedData]::Protect($b, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser); ' +
+  '[IO.File]::WriteAllText($env:PIM_MCP_SECRET_PATH, [Convert]::ToBase64String($e))';
+
+function powershell(script: string, path: string, input?: string): Promise<string> {
+  const env: NodeJS.ProcessEnv = { ...process.env, PIM_MCP_SECRET_PATH: path };
+  for (const key of Object.keys(env)) if (key.toLowerCase() === 'psmodulepath') delete env[key];
+  return run('powershell.exe', [...PS, script], { env, input, replaceEnv: true });
+}
 
 async function keychainRead(service: string, account: string): Promise<string> {
   if (process.platform === 'darwin') {
     const stdout = await run('security', ['find-generic-password', '-s', service, '-a', account, '-w']);
     return stdout.replace(/\n$/, '');
   }
-  if (process.platform === 'win32') {
-    const script =
-      '$s = Get-Content -Raw -LiteralPath $env:PIM_MCP_SECRET_PATH | ConvertTo-SecureString; ' +
-      '[Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)))';
-    return run('powershell.exe', [...PS, script], { env: { PIM_MCP_SECRET_PATH: dpapiPath(service, account) } });
-  }
+  if (process.platform === 'win32') return powershell(PS_READ, dpapiPath(service, account));
   const stdout = await run('secret-tool', ['lookup', 'service', service, 'account', account]);
   return stdout.replace(/\n$/, '');
 }
@@ -144,10 +160,7 @@ async function keychainWrite(service: string, account: string, value: string): P
   if (process.platform === 'win32') {
     const path = dpapiPath(service, account);
     mkdirSync(join(path, '..'), { recursive: true });
-    const script =
-      '$v = [Console]::In.ReadToEnd(); ' +
-      'ConvertTo-SecureString -String $v -AsPlainText -Force | ConvertFrom-SecureString | Set-Content -NoNewline -LiteralPath $env:PIM_MCP_SECRET_PATH';
-    await run('powershell.exe', [...PS, script], { input: value, env: { PIM_MCP_SECRET_PATH: path } });
+    await powershell(PS_WRITE, path, value);
     return;
   }
   try {

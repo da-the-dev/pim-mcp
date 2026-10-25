@@ -52,7 +52,7 @@ describe('secrets', () => {
   const keychainIt = process.platform === 'win32' || process.env.PIM_MCP_TEST_KEYCHAIN ? it : it.skip;
   keychainIt('round-trips through the OS secret store', async () => {
     const ref = `keychain:pim-mcp-test/run-${process.pid}`;
-    const value = 'p@ss "quoted" & spaced $HOME %PATH%';
+    const value = 'p@ss "quoted" & spaced $HOME %PATH% ü€';
     try {
       await storeKeychain(ref, value);
       expect(await resolveSecret(ref)).toBe(value);
