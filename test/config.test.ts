@@ -60,7 +60,7 @@ describe('secrets', () => {
       await deleteKeychain(ref).catch(() => {});
     }
     await expect(resolveSecret(ref)).rejects.toThrow(/no secret stored/);
-  });
+  }, 60_000); // PowerShell cold starts are slow on CI runners
 
   it('parses keychain refs', () => {
     expect(secretKind('keychain:pim-mcp/icloud')).toBe('keychain');

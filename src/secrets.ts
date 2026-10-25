@@ -1,11 +1,11 @@
-import { exec, execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdirSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 
-const run = promisify(execFile);
-const runShell = promisify(exec);
+// Password-manager CLIs may wait for a biometric/GUI unlock, so cmd: gets longer.
+const CMD_TIMEOUT_MS = 60_000;
+const STORE_TIMEOUT_MS = 30_000;
 
 /**
  * Resolve a secret reference from the config:
@@ -31,8 +31,8 @@ export async function resolveSecret(ref: string): Promise<string> {
     throw new Error(`no secret stored for "${service}/${account}" in the ${storeName()}; run: pim-mcp secret set ${service}/${account}`);
   }
   if (kind === 'cmd') {
-    // exec uses the platform shell: /bin/sh, or cmd.exe on Windows.
-    const { stdout } = await runShell(ref.slice(4));
+    // shell: true uses the platform shell: /bin/sh, or cmd.exe on Windows.
+    const stdout = await run(ref.slice(4), [], { shell: true, timeout: CMD_TIMEOUT_MS });
     const value = stdout.trim();
     if (!value) throw new Error(`command produced no output: ${ref.slice(4)}`);
     return value;
@@ -74,17 +74,39 @@ export function storeName(): string {
 
 // ---------------------------------------------------------------- platform stores
 
-/** Run a command, feeding `input` on stdin; resolves with stdout. */
-function runWithInput(cmd: string, args: string[], input: string, env?: NodeJS.ProcessEnv): Promise<string> {
+interface RunOptions {
+  input?: string;
+  env?: NodeJS.ProcessEnv;
+  shell?: boolean;
+  timeout?: number;
+}
+
+/**
+ * Run a command and resolve with its stdout. stdin is always closed (after writing
+ * `input`), because some programs, notably powershell.exe, otherwise wait on it forever.
+ */
+function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, { env: { ...process.env, ...opts.env }, shell: opts.shell, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let out = '';
     let err = '';
+    const timeout = opts.timeout ?? STORE_TIMEOUT_MS;
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`\`${opts.shell ? cmd : [cmd, ...args.slice(0, 1)].join(' ')}\` timed out after ${timeout / 1000}s`));
+    }, timeout);
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
-    child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(err.trim() || `${cmd} exited with ${code}`))));
-    child.stdin.end(input);
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(out);
+      else reject(new Error(err.trim() || `${opts.shell ? 'command' : cmd} exited with code ${code}`));
+    });
+    child.stdin.end(opts.input ?? '');
   });
 }
 
@@ -100,17 +122,16 @@ const PS = ['-NoProfile', '-NonInteractive', '-Command'];
 
 async function keychainRead(service: string, account: string): Promise<string> {
   if (process.platform === 'darwin') {
-    const { stdout } = await run('security', ['find-generic-password', '-s', service, '-a', account, '-w']);
+    const stdout = await run('security', ['find-generic-password', '-s', service, '-a', account, '-w']);
     return stdout.replace(/\n$/, '');
   }
   if (process.platform === 'win32') {
     const script =
       '$s = Get-Content -Raw -LiteralPath $env:PIM_MCP_SECRET_PATH | ConvertTo-SecureString; ' +
       '[Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)))';
-    const { stdout } = await run('powershell.exe', [...PS, script], { env: { ...process.env, PIM_MCP_SECRET_PATH: dpapiPath(service, account) } });
-    return stdout;
+    return run('powershell.exe', [...PS, script], { env: { PIM_MCP_SECRET_PATH: dpapiPath(service, account) } });
   }
-  const { stdout } = await run('secret-tool', ['lookup', 'service', service, 'account', account]);
+  const stdout = await run('secret-tool', ['lookup', 'service', service, 'account', account]);
   return stdout.replace(/\n$/, '');
 }
 
@@ -126,11 +147,11 @@ async function keychainWrite(service: string, account: string, value: string): P
     const script =
       '$v = [Console]::In.ReadToEnd(); ' +
       'ConvertTo-SecureString -String $v -AsPlainText -Force | ConvertFrom-SecureString | Set-Content -NoNewline -LiteralPath $env:PIM_MCP_SECRET_PATH';
-    await runWithInput('powershell.exe', [...PS, script], value, { PIM_MCP_SECRET_PATH: path });
+    await run('powershell.exe', [...PS, script], { input: value, env: { PIM_MCP_SECRET_PATH: path } });
     return;
   }
   try {
-    await runWithInput('secret-tool', ['store', `--label=${service} ${account}`, 'service', service, 'account', account], value);
+    await run('secret-tool', ['store', `--label=${service} ${account}`, 'service', service, 'account', account], { input: value });
   } catch (e) {
     const missing = (e as NodeJS.ErrnoException).code === 'ENOENT';
     throw new Error(
