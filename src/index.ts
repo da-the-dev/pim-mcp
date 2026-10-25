@@ -28,11 +28,11 @@ allow_delete = false    # let agents delete events
 allow_invites = false   # let agents add/change attendees (servers email invitations)
 
 [[accounts]]
-id = "thegood"
+id = "nextcloud"
 provider = "nextcloud"
-url = "https://use08.thegood.cloud/remote.php/dav"
+url = "https://your.next.cloud/remote.php/dav"
 username = "you@example.com"
-password = "keychain:pim-mcp/thegood"   # Nextcloud: Settings → Security → app password
+password = "keychain:pim-mcp/nextcloud"   # Nextcloud: Settings → Security → app password
 
 [[accounts]]
 id = "icloud"
