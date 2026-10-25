@@ -22,5 +22,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+        env:
+          # Exercise the real Keychain on macOS (Windows always runs the DPAPI test).
+          PIM_MCP_TEST_KEYCHAIN: ${{ runner.os == 'macOS' && '1' || '' }}
       - name: CLI smoke test
         run: node dist/index.js --help

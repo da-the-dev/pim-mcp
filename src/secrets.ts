@@ -86,7 +86,11 @@ interface RunOptions {
  * Run a command and resolve with its stdout. stdin is always closed (after writing
  * `input`), because some programs, notably powershell.exe, otherwise wait on it forever.
  */
-function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<string> {
+async function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<string> {
+  return (await runFull(cmd, args, opts)).stdout;
+}
+
+function runFull(cmd: string, args: string[], opts: RunOptions = {}): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { env: opts.replaceEnv ? opts.env : { ...process.env, ...opts.env }, shell: opts.shell, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let out = '';
@@ -104,7 +108,7 @@ function run(cmd: string, args: string[], opts: RunOptions = {}): Promise<string
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (code === 0) resolve(out);
+      if (code === 0) resolve({ stdout: out, stderr: err });
       else reject(new Error(err.trim() || `${opts.shell ? 'command' : cmd} exited with code ${code}`));
     });
     child.stdin.on('error', () => {}); // a child that exits without reading stdin causes EPIPE
@@ -143,8 +147,13 @@ function powershell(script: string, path: string, input?: string): Promise<strin
 
 async function keychainRead(service: string, account: string): Promise<string> {
   if (process.platform === 'darwin') {
-    const stdout = await run('security', ['find-generic-password', '-s', service, '-a', account, '-w']);
-    return stdout.replace(/\n$/, '');
+    // `-w` hex-encodes non-ASCII values ambiguously; `-g` prints `password: 0x<hex>  "…"` or `password: "…"`.
+    const { stderr } = await runFull('security', ['find-generic-password', '-s', service, '-a', account, '-g']);
+    const line = stderr.split('\n').find((l) => l.startsWith('password: ')) ?? '';
+    const hex = /^password: 0x([0-9A-Fa-f]*)/.exec(line);
+    if (hex) return Buffer.from(hex[1], 'hex').toString('utf8');
+    const quoted = /^password: "(.*)"$/.exec(line);
+    return quoted ? quoted[1] : '';
   }
   if (process.platform === 'win32') return powershell(PS_READ, dpapiPath(service, account));
   const stdout = await run('secret-tool', ['lookup', 'service', service, 'account', account]);
