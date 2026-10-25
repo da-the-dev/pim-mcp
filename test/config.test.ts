@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseConfig } from '../src/config.js';
-import { parseKeychainRef, resolveSecret, secretKind } from '../src/secrets.js';
+import { deleteKeychain, parseKeychainRef, resolveSecret, secretKind, storeKeychain } from '../src/secrets.js';
 import { formatInZone, parseUserTime, wallToMs } from '../src/calendar/time.js';
 
 describe('config', () => {
@@ -42,14 +42,28 @@ username = "me@gmail.com"
 
 describe('secrets', () => {
   it('resolves env and cmd refs', async () => {
-    process.env.CALMCP_TEST = 's3cret';
-    expect(await resolveSecret('env:CALMCP_TEST')).toBe('s3cret');
-    expect(await resolveSecret('cmd:printf hello')).toBe('hello');
-    await expect(resolveSecret('env:CALMCP_MISSING')).rejects.toThrow(/not set/);
+    process.env.PIM_MCP_TEST = 's3cret';
+    expect(await resolveSecret('env:PIM_MCP_TEST')).toBe('s3cret');
+    expect(await resolveSecret('cmd:echo hello')).toBe('hello');
+    await expect(resolveSecret('env:PIM_MCP_MISSING')).rejects.toThrow(/not set/);
+  });
+
+  // Touches the real OS store: always on Windows (DPAPI needs no setup), elsewhere opt-in.
+  const keychainIt = process.platform === 'win32' || process.env.PIM_MCP_TEST_KEYCHAIN ? it : it.skip;
+  keychainIt('round-trips through the OS secret store', async () => {
+    const ref = `keychain:pim-mcp-test/run-${process.pid}`;
+    const value = 'p@ss "quoted" & spaced $HOME %PATH%';
+    try {
+      await storeKeychain(ref, value);
+      expect(await resolveSecret(ref)).toBe(value);
+    } finally {
+      await deleteKeychain(ref).catch(() => {});
+    }
+    await expect(resolveSecret(ref)).rejects.toThrow(/no secret stored/);
   });
 
   it('parses keychain refs', () => {
-    expect(secretKind('keychain:calendar-mcp/icloud')).toBe('keychain');
+    expect(secretKind('keychain:pim-mcp/icloud')).toBe('keychain');
     expect(parseKeychainRef('keychain:a/b/c')).toEqual({ service: 'a/b', account: 'c' });
     expect(() => parseKeychainRef('keychain:nope')).toThrow();
   });

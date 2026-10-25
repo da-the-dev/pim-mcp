@@ -1,72 +1,131 @@
-# calendar-mcp
+# pim-mcp
 
-A thin, local MCP server that lets agents read and manage calendars across **Nextcloud** (e.g. thegood.cloud), **iCloud** and **Google**, all over CalDAV.
+[![npm](https://img.shields.io/npm/v/pim-mcp)](https://www.npmjs.com/package/pim-mcp) [![CI](https://github.com/da-the-dev/pim-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/da-the-dev/pim-mcp/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-The simplest one you can make. Have your agent a field day in this repo
+A thin, local MCP server that lets agents read and manage your calendars across **Nextcloud** (e.g. thegood.cloud), **iCloud**, **Google**, and any other CalDAV server. Runs on macOS, Linux and Windows.
+
+- **One merged view.** `list_events` returns every calendar on every account, sorted, with recurring events expanded.
+- **Portable.** One TOML config with no secrets in it. The same file works on every OS, because secrets are references to your OS secret store, env vars, or a password-manager command.
+- **Local and on-demand.** Your agent client starts it over stdio. Nothing runs in the background and there's no network listener.
+- **Guardrails.** Deleting events and anything that emails attendees are off until you turn them on.
 
 ## Install
 
+Requires [Node.js](https://nodejs.org) 22 or newer.
+
 ```sh
-git clone <this repo> calendar-mcp && cd calendar-mcp
-npm install && npm run build
-npm link            # optional: puts `calendar-mcp` on your PATH
-calendar-mcp init   # writes ~/.config/calendar-mcp/config.toml
+npm install -g pim-mcp
+pim-mcp init         # writes a config template
 ```
 
-Requires Node 20+.
+Prefer not to install globally? Prefix each command with `npx -y`, e.g. `npx -y pim-mcp init`. To build from source, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Set up accounts
+The config lives at `~/.config/pim-mcp/config.toml` on every OS. On Windows that's `C:\Users\<you>\.config\pim-mcp\config.toml`. To use a different location, set `PIM_MCP_CONFIG`.
 
-Edit `~/.config/calendar-mcp/config.toml` (or point `CALENDAR_MCP_CONFIG` elsewhere). Each secret is a reference:
+## Store secrets
+
+Passwords and tokens never go in the config. The config holds a **reference** instead:
 
 | Reference | Resolves to |
 |---|---|
-| `keychain:service/account` | macOS Keychain item. Store with `security add-generic-password -s service -a account -w` (it prompts for the value) |
-| `env:NAME` | environment variable |
-| `cmd:op read op://Private/iCloud/password` | stdout of any command (1Password, `pass`, `secret-tool`, …) |
+| `keychain:service/account` | your OS secret store (see below) |
+| `env:NAME` | an environment variable |
+| `cmd:<command>` | the output of a command, e.g. `cmd:op read op://Private/iCloud/password` (1Password), `cmd:pass show icloud`, `cmd:bw get password icloud` |
+
+The simplest way is `keychain:` with the built-in command, which prompts for the secret without echoing it:
+
+```sh
+pim-mcp secret set pim-mcp/icloud
+```
+
+Where `keychain:` secrets are stored on each OS:
+
+<details open>
+<summary><b>macOS</b></summary>
+
+The login **Keychain**. You can also manage items with Keychain Access or `security add-generic-password -s pim-mcp -a icloud -w`.
+</details>
+
+<details>
+<summary><b>Linux</b></summary>
+
+The desktop keyring (GNOME Keyring or KWallet) via the Secret Service API. This needs `secret-tool`:
+
+```sh
+sudo apt install libsecret-tools     # Debian/Ubuntu
+sudo dnf install libsecret           # Fedora
+sudo pacman -S libsecret             # Arch
+```
+
+On a **headless machine or server** there's usually no keyring running. Use `env:` refs (set the variables in your MCP client config) or `cmd:` with [`pass`](https://www.passwordstore.org/) instead:
+```toml
+password = "cmd:pass show pim-mcp/icloud"
+```
+</details>
+
+<details>
+<summary><b>Windows</b></summary>
+
+Secrets are encrypted with **DPAPI**, the Windows per-user encryption that Credential Manager also uses. They're stored under `%APPDATA%\pim-mcp\secrets\` and only your Windows user on this machine can decrypt them. Nothing extra to install, since PowerShell ships with Windows.
+
+`cmd:` refs run in `cmd.exe`, e.g. `cmd:op read op://Private/iCloud/password`.
+</details>
+
+## Set up accounts
 
 ### thegood.cloud / Nextcloud
 1. Nextcloud → **Settings → Security → Devices & sessions → Create new app password**.
-2. `security add-generic-password -s calendar-mcp -a thegood -w`
+2. `pim-mcp secret set pim-mcp/thegood`
 ```toml
 [[accounts]]
 id = "thegood"
 provider = "nextcloud"
-url = "https://your.next.cloud/remote.php/dav"
+url = "https://use08.thegood.cloud/remote.php/dav"
 username = "your-login"
-password = "keychain:calendar-mcp/thegood"
+password = "keychain:pim-mcp/thegood"
 ```
 
 ### iCloud
 1. [account.apple.com](https://account.apple.com) → **Sign-In and Security → App-Specific Passwords**.
-2. `security add-generic-password -s calendar-mcp -a icloud -w`
+2. `pim-mcp secret set pim-mcp/icloud`
 ```toml
 [[accounts]]
 id = "icloud"
 provider = "icloud"
-username = "you@icloud.com"
-password = "keychain:calendar-mcp/icloud"
+username = "you@icloud.com"    # the email you sign into your Apple Account with
+password = "keychain:pim-mcp/icloud"
 ```
 
 ### Google
 Google only allows OAuth for CalDAV, so it needs a one-time setup:
 1. [Google Cloud Console](https://console.cloud.google.com): create a project and enable the **CalDAV API**.
 2. **OAuth consent screen**: choose External and add yourself as a test user. Then set the publishing status to **In production**, because tokens issued in "Testing" mode expire after 7 days. You'll see an "unverified app" warning when you sign in. That's expected for a personal app.
-3. **Credentials → Create OAuth client ID → Desktop app.** Put the client ID in the config and store the secret: `security add-generic-password -s calendar-mcp -a google-client-secret -w`
-4. `calendar-mcp auth google --account google` opens your browser and stores the refresh token in the Keychain.
+3. **Credentials → Create OAuth client ID → Desktop app.** Put the client ID in the config, then store the secret with `pim-mcp secret set pim-mcp/google-client-secret`.
+4. `pim-mcp auth google --account google` opens your browser and stores the refresh token in your OS secret store.
 ```toml
 [[accounts]]
 id = "google"
 provider = "google"
 username = "you@gmail.com"
 client_id = "xxxx.apps.googleusercontent.com"
-client_secret = "keychain:calendar-mcp/google-client-secret"
-refresh_token = "keychain:calendar-mcp/google"
+client_secret = "keychain:pim-mcp/google-client-secret"
+refresh_token = "keychain:pim-mcp/google"
 ```
+
+### Any other CalDAV server
+```toml
+[[accounts]]
+id = "fastmail"
+provider = "caldav"
+url = "https://caldav.fastmail.com/"
+username = "you@fastmail.com"
+password = "keychain:pim-mcp/fastmail"
+```
+See [Providers](#providers) for known URLs.
 
 ### Verify
 ```sh
-calendar-mcp check
+pim-mcp check
 ✓ thegood (nextcloud) — 2 calendar(s)
     thegood/personal                 Personal
 ✓ icloud (icloud) — 3 calendar(s)
@@ -75,24 +134,57 @@ calendar-mcp check
 
 ## Connect an agent
 
-**Claude Code**
+**Claude Code** (all platforms)
 ```sh
-claude mcp add calendar -s user -- calendar-mcp
-# or without npm link:
-claude mcp add calendar -s user -- node /absolute/path/to/calendar-mcp/dist/index.js
+claude mcp add pim -s user -- npx -y pim-mcp
 ```
 
-**Claude Desktop / Cursor / others.** Add this to the client's MCP config. GUI apps often have a minimal PATH, so use absolute paths:
+**Claude Desktop, Cursor and other GUI clients.** Add the server to the client's MCP config:
+
+<details open>
+<summary><b>macOS</b>: <code>~/Library/Application Support/Claude/claude_desktop_config.json</code></summary>
+
 ```json
 {
   "mcpServers": {
-    "calendar": {
-      "command": "/opt/homebrew/bin/node",
-      "args": ["/absolute/path/to/calendar-mcp/dist/index.js"]
+    "pim": {
+      "command": "npx",
+      "args": ["-y", "pim-mcp"]
     }
   }
 }
 ```
+GUI apps don't always see your shell's PATH. If the server fails to start, replace `npx` with its full path from `which npx`, e.g. `/opt/homebrew/bin/npx`.
+</details>
+
+<details>
+<summary><b>Windows</b>: <code>%APPDATA%\Claude\claude_desktop_config.json</code></summary>
+
+```json
+{
+  "mcpServers": {
+    "pim": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "pim-mcp"]
+    }
+  }
+}
+```
+`npx` is a batch script on Windows, so it runs through `cmd /c`.
+</details>
+
+<details>
+<summary><b>Linux</b></summary>
+
+Claude Desktop isn't available for Linux; use Claude Code or another MCP client with the same `command` / `args` as macOS. If you use `env:` refs, put the variables in the client's `env` block:
+```json
+"pim": {
+  "command": "npx",
+  "args": ["-y", "pim-mcp"],
+  "env": { "ICLOUD_PASSWORD": "…" }
+}
+```
+</details>
 
 ## Tools
 
@@ -131,11 +223,23 @@ When a guardrail refuses an action, the agent gets an error naming the setting t
 
 Writes check the event's ETag. If the event changed elsewhere since it was read, the write fails rather than overwriting that change.
 
-## Development
+## Providers
 
-```sh
-npm run build && npm test
-npx @modelcontextprotocol/inspector node dist/index.js   # poke at tools by hand
-```
+| Provider | Status | Notes |
+|---|---|---|
+| Nextcloud / ownCloud (thegood.cloud, …) | ✅ `nextcloud` | `https://<host>/remote.php/dav` |
+| iCloud | ✅ `icloud` | app-specific password |
+| Google Calendar | ✅ `google` | OAuth, see setup above |
+| Fastmail | should work: `caldav` | `https://caldav.fastmail.com/`, app password |
+| Yahoo | should work: `caldav` | `https://caldav.calendar.yahoo.com`, app password |
+| mailbox.org | should work: `caldav` | `https://dav.mailbox.org/` |
+| Posteo | should work: `caldav` | `https://posteo.de:8443/` |
+| Self-hosted (Radicale, Baïkal, SOGo, Synology, …) | should work: `caldav` | your server's DAV URL |
+| Outlook.com / Microsoft 365 / Exchange | ❌ not yet | no CalDAV; needs a Microsoft Graph backend ([help wanted](CONTRIBUTING.md#adding-a-non-caldav-backend-eg-outlook)) |
+| Proton Calendar | ❌ | no CalDAV or public API |
 
-Layout: `src/config.ts` and `src/secrets.ts` hold config and secret handling shared across modules. `src/calendar/` contains `dav.ts` (CalDAV), `ical.ts` (parsing, recurrence, writing), `time.ts` (timezones) and `tools.ts` (MCP tools). Mail and files will be added as sibling modules.
+"Should work" means standard CalDAV that no one has confirmed with this project yet. If you've tried one, please open a PR updating this table.
+
+## Contributing & license
+
+MIT licensed. New providers, fixes and confirmations of the "should work" entries are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).

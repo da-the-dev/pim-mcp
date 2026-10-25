@@ -488,7 +488,7 @@ function touch(vevent: Component) {
 export function buildEvent(input: EventInput & { title: string; start: string }, tz: string, organizer?: string): { uid: string; ics: string } {
   const vcal = new ICAL.Component('vcalendar');
   vcal.addPropertyWithValue('version', '2.0');
-  vcal.addPropertyWithValue('prodid', '-//calendar-mcp//EN');
+  vcal.addPropertyWithValue('prodid', '-//pim-mcp//EN');
   vcal.addPropertyWithValue('calscale', 'GREGORIAN');
   const vevent = new ICAL.Component('vevent');
   const uid = randomUUID();

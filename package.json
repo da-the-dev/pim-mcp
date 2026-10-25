@@ -1,25 +1,45 @@
 {
-  "name": "calendar-mcp",
+  "name": "pim-mcp",
   "version": "0.1.0",
-  "description": "Thin local MCP server for CalDAV calendars (Nextcloud, iCloud, Google)",
+  "description": "Thin, local MCP server that lets agents manage your calendars across Nextcloud, iCloud, Google and any CalDAV server",
+  "mcpName": "io.github.da-the-dev/pim-mcp",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "caldav",
+    "calendar",
+    "icloud",
+    "nextcloud",
+    "google-calendar",
+    "agent"
+  ],
+  "author": "Aleksey Tkachenko",
+  "license": "MIT",
+  "homepage": "https://github.com/da-the-dev/pim-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/da-the-dev/pim-mcp/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/da-the-dev/pim-mcp.git"
+  },
   "type": "module",
   "bin": {
-    "calendar-mcp": "dist/index.js"
+    "pim-mcp": "dist/index.js"
   },
   "files": [
     "dist"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "vitest run",
-    "check": "node dist/index.js check",
-    "prepare": "tsc"
+    "prepare": "tsc",
+    "prepublishOnly": "npm run build && npm test"
   },
-  "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
     "ical.js": "^2.2.1",

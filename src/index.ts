@@ -5,18 +5,21 @@ import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import { CalendarStore } from './calendar/dav.js';
 import { registerCalendarTools } from './calendar/tools.js';
 import { configPath, loadConfig, type Config } from './config.js';
 import { GOOGLE_AUTH_URL, GOOGLE_SCOPE, GOOGLE_TOKEN_URL } from './providers.js';
-import { resolveSecret, secretKind, storeKeychain } from './secrets.js';
+import { resolveSecret, secretKind, storeKeychain, storeName } from './secrets.js';
 
-const VERSION = '0.1.0';
+const { version: VERSION } = createRequire(import.meta.url)('../package.json') as { version: string };
 
-const EXAMPLE_CONFIG = `# calendar-mcp config. Secrets are references, never literal values:
-#   env:NAME | keychain:service/account (macOS) | cmd:<command printing the secret>
-# Store a Keychain secret:  security add-generic-password -s calendar-mcp -a <account-id> -w
+const EXAMPLE_CONFIG = `# pim-mcp config. Secrets are references, never literal values:
+#   keychain:service/account  OS secret store (macOS Keychain, Linux Secret Service, Windows DPAPI)
+#   env:NAME                  environment variable
+#   cmd:<command>             output of a command, e.g. a password manager CLI
+# Store a secret:  pim-mcp secret set pim-mcp/<account-id>
 
 # timezone = "Europe/Amsterdam"   # default: this machine's timezone
 
@@ -29,13 +32,13 @@ id = "thegood"
 provider = "nextcloud"
 url = "https://use08.thegood.cloud/remote.php/dav"
 username = "you@example.com"
-password = "keychain:calendar-mcp/thegood"   # Nextcloud: Settings → Security → app password
+password = "keychain:pim-mcp/thegood"   # Nextcloud: Settings → Security → app password
 
 [[accounts]]
 id = "icloud"
 provider = "icloud"
 username = "you@icloud.com"
-password = "keychain:calendar-mcp/icloud"    # appleid.apple.com → App-Specific Passwords
+password = "keychain:pim-mcp/icloud"    # appleid.apple.com → App-Specific Passwords
 # hide_calendars = ["Reminders"]
 
 [[accounts]]
@@ -43,21 +46,23 @@ id = "google"
 provider = "google"
 username = "you@gmail.com"
 client_id = "xxxx.apps.googleusercontent.com" # Google Cloud Console → OAuth client (Desktop app)
-client_secret = "keychain:calendar-mcp/google-client-secret"
-refresh_token = "keychain:calendar-mcp/google" # filled in by: calendar-mcp auth google --account google
+client_secret = "keychain:pim-mcp/google-client-secret"
+refresh_token = "keychain:pim-mcp/google" # filled in by: pim-mcp auth google --account google
 # read_only_calendars = ["Holidays in Netherlands"]
 `;
 
-const HELP = `calendar-mcp ${VERSION} — local MCP server for CalDAV calendars
+const HELP = `pim-mcp ${VERSION} — local MCP server for CalDAV calendars
 
 Usage:
-  calendar-mcp                      run the MCP server on stdio (what your agent client starts)
-  calendar-mcp init                 write an example config to ${configPath()}
-  calendar-mcp check                connect to every account and list its calendars
-  calendar-mcp auth google --account <id>
+  pim-mcp                      run the MCP server on stdio (what your agent client starts)
+  pim-mcp init                 write an example config to ${configPath()}
+  pim-mcp check                connect to every account and list its calendars
+  pim-mcp secret set <service/account>
+                                    store a secret in the OS secret store (prompts for it)
+  pim-mcp auth google --account <id>
                                     one-time browser login for a Google account
 
-Config: ${configPath()} (override with CALENDAR_MCP_CONFIG)`;
+Config: ${configPath()} (override with PIM_MCP_CONFIG)`;
 
 async function serve() {
   let ctx: { store: CalendarStore; config: Config } | undefined;
@@ -70,7 +75,7 @@ async function serve() {
   }
   const tz = ctx?.config.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const server = new McpServer(
-    { name: 'calendar-mcp', version: VERSION },
+    { name: 'pim-mcp', version: VERSION },
     {
       instructions: [
         `Calendars from the user's configured accounts (${ctx?.config.accounts.map((a) => a.id).join(', ') ?? 'not configured'}).`,
@@ -95,7 +100,7 @@ function init() {
   }
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, EXAMPLE_CONFIG, { mode: 0o600 });
-  console.log(`Wrote example config to ${path}\nEdit it, store your secrets, then run: calendar-mcp check`);
+  console.log(`Wrote example config to ${path}\nEdit it, store your secrets, then run: pim-mcp check`);
 }
 
 async function check() {
@@ -122,8 +127,52 @@ async function check() {
 }
 
 function openBrowser(url: string) {
-  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
-  execFile(cmd, [url], () => {});
+  if (process.platform === 'win32') execFile('rundll32', ['url.dll,FileProtocolHandler', url], () => {});
+  else execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], () => {});
+}
+
+/** Read a line without echoing it (or all of stdin when piped). */
+async function promptHidden(question: string): Promise<string> {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) {
+    let data = '';
+    for await (const chunk of stdin) data += chunk;
+    return data.replace(/\r?\n$/, '');
+  }
+  process.stderr.write(question);
+  stdin.setRawMode(true);
+  stdin.setEncoding('utf8');
+  stdin.resume();
+  return new Promise((resolve) => {
+    let value = '';
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n') {
+          stdin.off('data', onData);
+          stdin.setRawMode(false);
+          stdin.pause();
+          process.stderr.write('\n');
+          return resolve(value);
+        }
+        if (ch === '\u0003') {
+          stdin.setRawMode(false);
+          process.stderr.write('\n');
+          process.exit(130);
+        }
+        if (ch === '\u007f' || ch === '\b') value = value.slice(0, -1);
+        else value += ch;
+      }
+    };
+    stdin.on('data', onData);
+  });
+}
+
+async function secretSet(ref: string | undefined) {
+  if (!ref) throw new Error('usage: pim-mcp secret set <service/account>   (e.g. pim-mcp/icloud)');
+  const value = await promptHidden(`Secret for ${ref.replace(/^keychain:/, '')}: `);
+  if (!value) throw new Error('empty secret; nothing stored');
+  await storeKeychain(ref, value);
+  console.log(`✓ Stored in the ${storeName()}. Reference it in the config as: "keychain:${ref.replace(/^keychain:/, '')}"`);
 }
 
 async function authGoogle(accountId: string | undefined) {
@@ -149,7 +198,7 @@ async function authGoogle(accountId: string | undefined) {
         srv.close();
         return reject(new Error(`authorization failed: ${err ?? 'bad response'}`));
       }
-      res.writeHead(200, { 'content-type': 'text/plain' }).end('calendar-mcp is authorized. You can close this tab.');
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('pim-mcp is authorized. You can close this tab.');
       srv.close();
       resolve({ code: got, redirect });
     });
@@ -192,15 +241,15 @@ async function authGoogle(accountId: string | undefined) {
     throw new Error(`token exchange failed: ${tokens.error_description ?? tokens.error ?? res.status}`);
   }
 
-  const target = account.refresh_token ?? (process.platform === 'darwin' ? `keychain:calendar-mcp/${account.id}` : undefined);
-  if (target && secretKind(target) === 'keychain') {
+  const target = account.refresh_token ?? `keychain:pim-mcp/${account.id}`;
+  if (secretKind(target) === 'keychain') {
     await storeKeychain(target, tokens.refresh_token);
-    console.log(`✓ Stored refresh token in Keychain (${target.slice('keychain:'.length)}).`);
+    console.log(`✓ Stored refresh token in the ${storeName()} (${target.slice('keychain:'.length)}).`);
     if (!account.refresh_token) console.log(`Add this to the "${account.id}" account in ${configPath()}:\n  refresh_token = "${target}"`);
   } else {
     console.log(`✓ Refresh token (store it where your config's refresh_token points):\n${tokens.refresh_token}`);
   }
-  console.log('\nNext: calendar-mcp check');
+  console.log('\nNext: pim-mcp check');
 }
 
 async function main() {
@@ -213,8 +262,11 @@ async function main() {
       return init();
     case 'check':
       return check();
+    case 'secret':
+      if (rest[0] !== 'set') throw new Error('usage: pim-mcp secret set <service/account>');
+      return secretSet(rest[1]);
     case 'auth': {
-      if (rest[0] !== 'google') throw new Error('usage: calendar-mcp auth google --account <id>');
+      if (rest[0] !== 'google') throw new Error('usage: pim-mcp auth google --account <id>');
       const i = rest.indexOf('--account');
       return authGoogle(i >= 0 ? rest[i + 1] : undefined);
     }
@@ -233,6 +285,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error(`calendar-mcp: ${e instanceof Error ? e.message : e}`);
+  console.error(`pim-mcp: ${e instanceof Error ? e.message : e}`);
   process.exit(1);
 });

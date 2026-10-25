@@ -204,7 +204,7 @@ export async function connect(account: AccountConfig): Promise<DAVClient> {
   let client: DAVClient;
   if (account.provider === 'google') {
     if (!account.refresh_token) {
-      throw new Error(`account "${account.id}" has no refresh_token yet; run: calendar-mcp auth google --account ${account.id}`);
+      throw new Error(`account "${account.id}" has no refresh_token yet; run: pim-mcp auth google --account ${account.id}`);
     }
     client = new DAVClient({
       serverUrl: url,

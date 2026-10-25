@@ -49,9 +49,9 @@ export type AccountConfig = z.infer<typeof Account>;
 export type Config = z.infer<typeof Config>;
 
 export function configPath(): string {
-  if (process.env.CALENDAR_MCP_CONFIG) return process.env.CALENDAR_MCP_CONFIG;
+  if (process.env.PIM_MCP_CONFIG) return process.env.PIM_MCP_CONFIG;
   const base = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
-  return join(base, 'calendar-mcp', 'config.toml');
+  return join(base, 'pim-mcp', 'config.toml');
 }
 
 export function parseConfig(toml: string): Config {
@@ -77,7 +77,7 @@ export function loadConfig(path = configPath()): Config {
   try {
     raw = readFileSync(path, 'utf8');
   } catch {
-    throw new Error(`No config found at ${path}. Create it (see README) or set CALENDAR_MCP_CONFIG.`);
+    throw new Error(`No config found at ${path}. Create it (see README) or set PIM_MCP_CONFIG.`);
   }
   return parseConfig(raw);
 }
